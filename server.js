@@ -1,12 +1,20 @@
 const express = require("express");
 const fs = require("fs");
 const EventEmitter = require("events");
+const { MongoClient } = require("mongodb");
 
 const app = express();
 
 const PORT = 3000;
 
-const usersFile = "users.json";
+
+// MongoDB connection
+const client = new MongoClient("mongodb://localhost:27017");
+
+let usersCollection;
+
+
+// Audit file
 const auditFile = "audit.log";
 
 
@@ -18,34 +26,6 @@ app.use(express.static("public"));
 
 // Create EventEmitter
 const userEvents = new EventEmitter();
-
-
-// Read users from users.json
-function readUsers() {
-
-    try {
-
-        const data = fs.readFileSync(usersFile, "utf8");
-
-        return JSON.parse(data);
-
-    } catch (error) {
-
-        return [];
-
-    }
-}
-
-
-// Save users to users.json
-function saveUsers(users) {
-
-    fs.writeFileSync(
-        usersFile,
-        JSON.stringify(users, null, 2)
-    );
-
-}
 
 
 // SIGN UP EVENT
@@ -75,128 +55,178 @@ userEvents.on("login", (user) => {
 
 
 // SIGN UP ROUTE
-app.post("/signup", (req, res) => {
+app.post("/signup", async (req, res) => {
 
-    const { name, email, password } = req.body;
+    try {
+
+        const { name, email, password } = req.body;
 
 
-    // Check empty fields
-    if (!name || !email || !password) {
+        // Check empty fields
+        if (!name || !email || !password) {
 
-        return res.status(400).json({
+            return res.status(400).json({
+                success: false,
+                message: "Please fill in all fields."
+            });
+
+        }
+
+
+        // Check if email already exists
+        const existingUser = await usersCollection.findOne({
+            email: email.toLowerCase()
+        });
+
+
+        if (existingUser) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Email already registered."
+            });
+
+        }
+
+
+        // Create new user
+        const newUser = {
+            name: name,
+            email: email.toLowerCase(),
+            password: password
+        };
+
+
+        // Save user to MongoDB
+        await usersCollection.insertOne(newUser);
+
+
+        // Emit signup event
+        userEvents.emit("signup", newUser);
+
+
+        // Send response
+        res.json({
+            success: true,
+            message: "Registration successful!"
+        });
+
+    } catch (error) {
+
+        console.error("Signup error:", error);
+
+        res.status(500).json({
             success: false,
-            message: "Please fill in all fields."
+            message: "Server error."
         });
 
     }
-
-
-    // Read users
-    const users = readUsers();
-
-
-    // Check existing email
-    const existingUser = users.find(
-        user => user.email.toLowerCase() === email.toLowerCase()
-    );
-
-
-    if (existingUser) {
-
-        return res.status(400).json({
-            success: false,
-            message: "Email already registered."
-        });
-
-    }
-
-
-    // Create new user
-    const newUser = {
-        name: name,
-        email: email,
-        password: password
-    };
-
-
-    // Add user
-    users.push(newUser);
-
-
-    // Save user
-    saveUsers(users);
-
-
-    // Emit signup event
-    userEvents.emit("signup", newUser);
-
-
-    // Send response
-    res.json({
-        success: true,
-        message: "Registration successful!"
-    });
 
 });
 
 
 // LOGIN ROUTE
-app.post("/login", (req, res) => {
+app.post("/login", async (req, res) => {
 
-    const { email, password } = req.body;
+    try {
+
+        const { email, password } = req.body;
 
 
-    // Check empty fields
-    if (!email || !password) {
+        // Check empty fields
+        if (!email || !password) {
 
-        return res.status(400).json({
+            return res.status(400).json({
+                success: false,
+                message: "Please enter email and password."
+            });
+
+        }
+
+
+        // Find user in MongoDB
+        const user = await usersCollection.findOne({
+            email: email.toLowerCase(),
+            password: password
+        });
+
+
+        // User not found
+        if (!user) {
+
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password."
+            });
+
+        }
+
+
+        // Emit login event
+        userEvents.emit("login", user);
+
+
+        // Send success response
+        res.json({
+            success: true,
+            message: "Login successful!",
+            name: user.name
+        });
+
+    } catch (error) {
+
+        console.error("Login error:", error);
+
+        res.status(500).json({
             success: false,
-            message: "Please enter email and password."
+            message: "Server error."
         });
 
     }
 
-
-    // Read users
-    const users = readUsers();
+});
 
 
-    // Find user
-    const user = users.find(
-        user =>
-            user.email.toLowerCase() === email.toLowerCase() &&
-            user.password === password
-    );
+// Connect to MongoDB and start server
+async function startServer() {
+
+    try {
+
+        // Connect to MongoDB
+        await client.connect();
+
+        console.log("Connected to MongoDB");
 
 
-    // User not found
-    if (!user) {
+        // Select database
+        const database = client.db("loginDB");
 
-        return res.status(401).json({
-            success: false,
-            message: "Invalid email or password."
+
+        // Select collection
+        usersCollection = database.collection("users");
+
+
+        console.log("Database: loginDB");
+        console.log("Collection: users");
+
+
+        // Start server
+        app.listen(PORT, () => {
+
+            console.log(
+                `Server running at http://localhost:${PORT}`
+            );
+
         });
+
+    } catch (error) {
+
+        console.error("MongoDB connection failed:", error);
 
     }
 
-
-    // Emit login event
-    userEvents.emit("login", user);
+}
 
 
-    // Send success response
-    res.json({
-        success: true,
-        message: "Login successful!",
-        name: user.name
-    });
-
-});
-
-
-// Start server
-app.listen(PORT, () => {
-
-    console.log(`Server running at http://localhost:${PORT}`);
-
-});
+// Start application
+startServer();
